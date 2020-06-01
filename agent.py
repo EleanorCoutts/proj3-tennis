@@ -51,6 +51,21 @@ class OU_Noise():
 		self.x = self.x+dx
 		return self.x
 		
+class gaussian_noise():
+	def __init__(self,action_size,num_agents,mean,stdev):
+		self.action_size = action_size
+		self.num_agents = num_agents
+		self.stdev = stdev
+		self.mean = mean
+		self.reset()
+	def reset(self):
+		#for consistency with OU noise function
+		self.x = self.mean + self.stdev * np.random.randn(self.num_agents,self.action_size)
+	def get_noise(self):
+		self.x = self.mean + self.stdev * np.random.randn(self.num_agents,self.action_size)
+		return(self.x)
+		
+		
 class ddpg_Agent():
 	def __init__(self, state_size, action_size, num_agents, hidden1_size, hidden2_size, actor_lr, critic_lr, gamma, tau):
 		self.critic_local = critic_network(state_size*num_agents,hidden1_size,hidden2_size,action_size*num_agents)
