@@ -80,17 +80,21 @@ class ddpg_Agent():
 	
 	def get_actions(self,states):
 		s = torch.from_numpy(states).float()
-		a = self.actor_local(s).detach().numpy()
+		self.actor_local.eval()
+		with torch.no_grad():
+			a = self.actor_local(s).detach().numpy()
+		self.actor_local.train()
 		return(a)
 	
 			
 	def learn(self,experience_expanded):
-		states,actions,rewards,next_states,dones,next_actions,actor_actions = experience_expanded
+		this_state_all, this_obs_agent, taken_actions, actor_actions, next_actions, reward_agent, next_state_all, done_agent = experience_expanded
+		#states,actions,rewards,next_states,dones,next_actions,actor_actions = experience_expanded
 		
 		
-		Q_vals = self.critic_local(state=states,action=actions)
-		next_Q = self.critic_target(next_states,next_actions)
-		Q_target = rewards + self.gamma * next_Q
+		Q_vals = self.critic_local(state=this_state_all,action=taken_actions)
+		next_Q = self.critic_target(next_state_all,next_actions)
+		Q_target = reward_agent + self.gamma * next_Q * (1-done_agent)
 		
 		#update local critic network
 		critic_loss = F.mse_loss(Q_vals, Q_target)
@@ -99,7 +103,7 @@ class ddpg_Agent():
 		self.critic_optim.step()
 		
 		#update local actor network
-		actor_loss = -self.critic_local(states, actor_actions).mean()
+		actor_loss = -self.critic_local(this_state_all, actor_actions).mean()
 		self.actor_optim.zero_grad()
 		actor_loss.backward()
 		self.actor_optim.step()
@@ -142,7 +146,7 @@ class MADDPG():
 		return(all_actions)
 	
 	def step(self,states,actions,rewards,next_states,dones,updates_per_step):
-		#each agent has its own replay buffer, but the states stored include observations from all agents
+		
 		
 		#flatten states and actions from all agents, ready to be input into critic
 		all_states = states.reshape(self.num_agents*self.state_size)
@@ -154,6 +158,7 @@ class MADDPG():
 		#If enough memory, take a random sample from the memory, and learn from it
 		if len(self.replay_memory) >= self.batch_size:
 			#experience_batch = self.replay_memory.sample()
+			#print('learn')
 			for _ in range(updates_per_step):
 				for agent_i in range(self.num_agents):
 					experience_batch = self.replay_memory.sample()
@@ -161,24 +166,27 @@ class MADDPG():
 		
 	def learn(self, experiences, agent_no):
 		
-		all_states,all_actions,rewards,all_next_states,dones = experiences
+		this_state_all, taken_actions, rewards_all, next_state_all, dones_all = experiences
 		#all_states and all_next have shape (batch_size, num_agents*state_size)
 		
 		next_actions = []
 		#get next actions using the target actor of each agent
 		for i in range(self.num_agents):  
-			ns = all_next_states[:,i:i+self.state_size] #next state (observation) for that agent as a torch float. all batches
+			ns = next_state_all[:,i:i+self.state_size] #next state (observation) for that agent as a torch float. all batches
 			a = self.agents[i].actor_target(ns)
 			next_actions.append(a)
 		
 		next_actions = torch.cat(next_actions,dim=1)
 		
-		s = all_states[:,agent_no:agent_no+self.state_size] #state (observation) for that agent as a torch float. all batches
-		modified_actions = all_actions
-		modified_actions[:,agent_no:agent_no+self.action_size] = self.agents[agent_no].actor_local(s) 
-		agent_dones = dones[:,agent_no].view(self.batch_size,1)
-		agent_rewards = rewards[:,agent_no].view(self.batch_size,1)
-		experience_expanded = (all_states,all_actions,agent_rewards,all_next_states,agent_dones,next_actions,modified_actions)
+		this_obs_agent = this_state_all[:,agent_no:agent_no+self.state_size] #state (observation) for that agent as a torch float. all batches
+		
+		#get actions with this agent's modified to be that given by the actor network
+		actor_actions = copy.deepcopy(taken_actions)
+		actor_actions[:,agent_no:agent_no+self.action_size] = self.agents[agent_no].actor_local(this_obs_agent) 
+		
+		done_agent = dones_all[:,agent_no].view(self.batch_size,1)
+		reward_agent = rewards_all[:,agent_no].view(self.batch_size,1)
+		experience_expanded = (this_state_all, this_obs_agent, taken_actions, actor_actions, next_actions, reward_agent, next_state_all, done_agent)
 		self.agents[agent_no].learn(experience_expanded)
 		
 	def checkpoint(self, name, location, ep_no, scores=None):

@@ -32,7 +32,7 @@ class critic_network(nn.Module):
 		super(critic_network, self).__init__()
 		self.fc1 = nn.Linear(state_size+action_size,hidden1_size)
 		self.fc2 = nn.Linear(hidden1_size,hidden2_size)
-		self.fc3 = nn.Linear(hidden2_size,action_size)
+		self.fc3 = nn.Linear(hidden2_size,1)
 		self.reset_parameters()
 		
 	def reset_parameters(self):
