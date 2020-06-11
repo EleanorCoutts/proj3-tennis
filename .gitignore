@@ -3,3 +3,4 @@ Tennis_Windows_x86_64*
 unity-environment.log
 __pycache__
 checkpoints
+*.pdf

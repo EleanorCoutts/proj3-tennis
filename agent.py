@@ -32,6 +32,8 @@ class replay_buffer():
 		
 		return(states,actions_taken,rewards,next_states,dones)
 	
+	#def update
+	
 	def __len__(self):
 		return(len(self.memory))
 
@@ -44,6 +46,7 @@ class OU_Noise():
 		self.theta = theta
 		self.sigma = sigma
 		self.reset()
+		
 	def reset(self):
 		self.x = np.zeros((self.num_agents,self.action_size))
 	def get_noise(self):
@@ -67,7 +70,7 @@ class gaussian_noise():
 		
 		
 class ddpg_Agent():
-	def __init__(self, state_size, action_size, num_agents, hidden1_size, hidden2_size, actor_lr, critic_lr, gamma, tau):
+	def __init__(self, state_size, action_size, num_agents, hidden1_size, hidden2_size, actor_lr, critic_lr, gamma, tau, batch_norm=True):
 		self.critic_local = critic_network(state_size*num_agents,hidden1_size,hidden2_size,action_size*num_agents)
 		self.critic_target = copy.deepcopy(self.critic_local)
 		self.actor_local = actor_network(state_size,hidden1_size,hidden2_size,action_size)
@@ -77,6 +80,8 @@ class ddpg_Agent():
 		
 		self.actor_optim = optim.Adam(self.actor_local.parameters(), lr=actor_lr)
 		self.critic_optim = optim.Adam(self.critic_local.parameters(), lr=critic_lr)
+		
+		self.BatchNorm=batch_norm
 	
 	def get_actions(self,states):
 		s = torch.from_numpy(states).float()
@@ -92,9 +97,22 @@ class ddpg_Agent():
 		#states,actions,rewards,next_states,dones,next_actions,actor_actions = experience_expanded
 		
 		
-		Q_vals = self.critic_local(state=this_state_all,action=taken_actions)
 		next_Q = self.critic_target(next_state_all,next_actions)
-		Q_target = reward_agent + self.gamma * next_Q * (1-done_agent)
+
+		if self.BatchNorm:
+			reward_mean = torch.mean(reward_agent)
+			reward_std  = torch.std(reward_agent)
+			if reward_std>0:
+				reward_agent_norm = (reward_agent-reward_mean)/reward_std
+			else:
+				reward_agent_norm = (reward_agent-reward_mean)
+			Q_target = reward_agent_norm + self.gamma * next_Q * (1-done_agent)
+			
+		else:
+			Q_target = reward_agent + self.gamma * next_Q * (1-done_agent)
+		
+		Q_vals = self.critic_local(state=this_state_all,action=taken_actions)
+		
 		
 		#update local critic network
 		critic_loss = F.mse_loss(Q_vals, Q_target)
@@ -121,21 +139,26 @@ class ddpg_Agent():
 		
 class MADDPG():
 	def __init__(self,state_size, action_size, num_agents, hidden1_size, hidden2_size, 
-				 max_replay_size, batch_size, actor_lr, critic_lr, gamma, tau):
+				 max_replay_size, batch_size, actor_lr, critic_lr, gamma, tau, batch_norm=True):
 		
 		self.num_agents = num_agents
 		self.action_size, self.state_size = action_size, state_size
-		
 		self.agents = []
 		for _ in range(self.num_agents):
 			#create each agent
-			self.agents.append(ddpg_Agent(state_size=state_size, action_size=action_size, num_agents=num_agents, 
+			single_ddpg_agent = ddpg_Agent(state_size=state_size, action_size=action_size, num_agents=num_agents, 
 									 hidden1_size=hidden1_size, hidden2_size=hidden2_size, 
 									 actor_lr=actor_lr, critic_lr=critic_lr, 
-									 gamma=gamma, tau=tau))
+									 gamma=gamma, tau=tau, batch_norm=batch_norm)
+			self.agents.append(single_ddpg_agent)
 		
 		self.replay_memory = replay_buffer(max_size=max_replay_size, batch_size=batch_size)
 		self.batch_size = batch_size
+		
+		self.learn_in_step = True 
+		self.learn_step_count = 0
+		#True= a learn step is taken when step is called
+		#False = learn step not taken, (but experience added to replay memory)
 		
 	def get_actions(self, all_obs):
 		all_actions = []
@@ -156,10 +179,11 @@ class MADDPG():
 		self.replay_memory.add(all_states,all_actions,rewards,all_next_states,dones)
 		
 		#If enough memory, take a random sample from the memory, and learn from it
-		if len(self.replay_memory) >= self.batch_size:
+		if len(self.replay_memory) >= self.batch_size and self.learn_in_step:
 			#experience_batch = self.replay_memory.sample()
 			#print('learn')
 			for _ in range(updates_per_step):
+				self.learn_step_count +=1
 				for agent_i in range(self.num_agents):
 					experience_batch = self.replay_memory.sample()
 					self.learn(experience_batch, agent_i)
