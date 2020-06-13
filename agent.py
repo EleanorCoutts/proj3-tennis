@@ -14,25 +14,28 @@ class replay_buffer():
 	def __init__(self,max_size,batch_size):
 		self.memory = deque(maxlen=int(max_size))
 		self.batch_size = batch_size
-		self.experience = namedtuple("Experience", field_names=["states", "actions_taken", "rewards", "next_states", "dones"])
+		self.experience = namedtuple("Experience", field_names=["all_states","states","actions","rewards","all_next_states","next_states","dones"])
 
 	
-	def add(self,state,action,reward,next_state,done):
-		e = self.experience(state, action, reward, next_state, done)
+	def add(self,all_states,states,actions,rewards,all_next_states,next_states,dones):
+		#all_states,states,actions,rewards,all_next_states,next_states,dones
+		#print(next_states.shape,' add func')
+		e = self.experience(all_states,states,actions,rewards,all_next_states,next_states,dones)
 		self.memory.append(e)
 		#memory 1st index is length, 2nd index is 0:state, 1:action, 2:reward, 3:next_state, 4:done
 		
 	def sample(self):
 		experiences = random.sample(self.memory,k=self.batch_size)
-		states = torch.from_numpy(np.vstack([e.states for e in experiences if e is not None])).float()
-		actions_taken = torch.from_numpy(np.vstack([e.actions_taken for e in experiences if e is not None])).float()
-		rewards = torch.from_numpy(np.vstack([e.rewards for e in experiences if e is not None])).float()
-		next_states = torch.from_numpy(np.vstack([e.next_states for e in experiences if e is not None])).float()
-		dones = torch.from_numpy(np.vstack([e.dones for e in experiences if e is not None]).astype(np.uint8)).float()
 		
-		return(states,actions_taken,rewards,next_states,dones)
-	
-	#def update
+		all_states = torch.from_numpy(np.array([e.all_states for e in experiences if e is not None])).float()
+		states = torch.from_numpy(np.array([e.states for e in experiences if e is not None])).float()
+		actions = torch.from_numpy(np.array([e.actions for e in experiences if e is not None])).float()
+		rewards = torch.from_numpy(np.array([e.rewards for e in experiences if e is not None])).float()
+		all_next_states = torch.from_numpy(np.array([e.all_next_states for e in experiences if e is not None])).float()
+		next_states = torch.from_numpy(np.array([e.next_states for e in experiences if e is not None])).float()
+		dones = torch.from_numpy(np.array([e.dones for e in experiences if e is not None]).astype(np.uint8)).float()
+		#print(next_states.shape,' sample_func')
+		return(all_states,states,actions,rewards,all_next_states,next_states,dones)
 	
 	def __len__(self):
 		return(len(self.memory))
@@ -75,7 +78,7 @@ class ddpg_Agent():
 		self.critic_target = copy.deepcopy(self.critic_local)
 		self.actor_local = actor_network(state_size,hidden1_size,hidden2_size,action_size)
 		self.actor_target = copy.deepcopy(self.actor_local)
-
+		#could try replacing these with a hard update
 		self.gamma, self.tau = gamma, tau
 		
 		self.actor_optim = optim.Adam(self.actor_local.parameters(), lr=actor_lr)
@@ -93,11 +96,11 @@ class ddpg_Agent():
 	
 			
 	def learn(self,experience_expanded):
-		this_state_all, this_obs_agent, taken_actions, actor_actions, next_actions, reward_agent, next_state_all, done_agent = experience_expanded
+		all_states, actor_all_actions, all_actions_taken, reward_agent, done_agent, all_next_states, all_next_actions = experience_expanded
 		#states,actions,rewards,next_states,dones,next_actions,actor_actions = experience_expanded
 		
 		
-		next_Q = self.critic_target(next_state_all,next_actions)
+		next_Q = self.critic_target(all_next_states,all_next_actions)
 
 		if self.BatchNorm:
 			reward_mean = torch.mean(reward_agent)
@@ -111,17 +114,17 @@ class ddpg_Agent():
 		else:
 			Q_target = reward_agent + self.gamma * next_Q * (1-done_agent)
 		
-		Q_vals = self.critic_local(state=this_state_all,action=taken_actions)
+		Q_vals = self.critic_local(state=all_states,action=all_actions_taken)
 		
 		
 		#update local critic network
-		critic_loss = F.mse_loss(Q_vals, Q_target)
+		critic_loss = F.mse_loss(input=Q_vals, target=Q_target)
 		self.critic_optim.zero_grad()
-		critic_loss.backward(retain_graph=True)
+		critic_loss.backward()
 		self.critic_optim.step()
 		
 		#update local actor network
-		actor_loss = -self.critic_local(this_state_all, actor_actions).mean()
+		actor_loss = -self.critic_local(all_states, actor_all_actions).mean()
 		self.actor_optim.zero_grad()
 		actor_loss.backward()
 		self.actor_optim.step()
@@ -143,6 +146,7 @@ class MADDPG():
 		
 		self.num_agents = num_agents
 		self.action_size, self.state_size = action_size, state_size
+		self.all_action_size = self.action_size*self.num_agents
 		self.agents = []
 		for _ in range(self.num_agents):
 			#create each agent
@@ -172,16 +176,14 @@ class MADDPG():
 		
 		
 		#flatten states and actions from all agents, ready to be input into critic
-		all_states = states.reshape(self.num_agents*self.state_size)
-		all_next_states = next_states.reshape(self.num_agents*self.state_size)
-		all_actions = actions.reshape(self.num_agents*self.action_size)
+		all_states = np.reshape(states,newshape=(-1))
+		all_next_states = np.reshape(next_states,newshape=(-1))
+		#all_actions = actions.reshape(self.num_agents*self.action_size)
 		
-		self.replay_memory.add(all_states,all_actions,rewards,all_next_states,dones)
+		self.replay_memory.add(all_states,states,actions,rewards,all_next_states,next_states,dones)
 		
 		#If enough memory, take a random sample from the memory, and learn from it
 		if len(self.replay_memory) >= self.batch_size and self.learn_in_step:
-			#experience_batch = self.replay_memory.sample()
-			#print('learn')
 			for _ in range(updates_per_step):
 				self.learn_step_count +=1
 				for agent_i in range(self.num_agents):
@@ -190,28 +192,29 @@ class MADDPG():
 		
 	def learn(self, experiences, agent_no):
 		
-		this_state_all, taken_actions, rewards_all, next_state_all, dones_all = experiences
+		all_states,states,actions,rewards,all_next_states,next_states,dones = experiences
 		#all_states and all_next have shape (batch_size, num_agents*state_size)
-		
-		next_actions = []
+		all_next_actions = torch.zeros(states.shape[:2] + (self.action_size,),dtype=torch.float)
 		#get next actions using the target actor of each agent
 		for i in range(self.num_agents):  
-			ns = next_state_all[:,i:i+self.state_size] #next state (observation) for that agent as a torch float. all batches
-			a = self.agents[i].actor_target(ns)
-			next_actions.append(a)
+			ns = next_states[:,i,:] #next state (observation) for that agent as a torch float. all batches
+			all_next_actions[:,i,:] = self.agents[i].actor_target.forward(ns)
+		all_next_actions = all_next_actions.view(-1,self.all_action_size)
 		
-		next_actions = torch.cat(next_actions,dim=1)
-		
-		this_obs_agent = this_state_all[:,agent_no:agent_no+self.state_size] #state (observation) for that agent as a torch float. all batches
+		agent = self.agents[agent_no]
+		agent_state = states[:,agent_no,:]
 		
 		#get actions with this agent's modified to be that given by the actor network
-		actor_actions = copy.deepcopy(taken_actions)
-		actor_actions[:,agent_no:agent_no+self.action_size] = self.agents[agent_no].actor_local(this_obs_agent) 
+		actor_all_actions = copy.deepcopy(actions)
+		actor_all_actions[:,agent_no,:] = agent.actor_local(agent_state) 
+		actor_all_actions = actor_all_actions.view(-1,self.all_action_size)
 		
-		done_agent = dones_all[:,agent_no].view(self.batch_size,1)
-		reward_agent = rewards_all[:,agent_no].view(self.batch_size,1)
-		experience_expanded = (this_state_all, this_obs_agent, taken_actions, actor_actions, next_actions, reward_agent, next_state_all, done_agent)
-		self.agents[agent_no].learn(experience_expanded)
+		all_actions_taken = actions.view(-1,self.all_action_size)
+		
+		done_agent = dones[:,agent_no].view(self.batch_size,1)
+		reward_agent = rewards[:,agent_no].view(self.batch_size,1)
+		experience_expanded = (all_states, actor_all_actions, all_actions_taken, reward_agent, done_agent, all_next_states, all_next_actions)
+		agent.learn(experience_expanded)
 		
 	def checkpoint(self, name, location, ep_no, scores=None):
 		
